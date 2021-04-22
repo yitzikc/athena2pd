@@ -54,6 +54,38 @@ class AthenaDFConnector:
                 and that the profile name in .aws/config matches the supplied profile name.
                 \nError: {}'''.format(e))
 
+    def query_to_csv(self, query_string = '', s3_output_location = ''):
+        '''
+        Queries your Athena database, and produced a CSV output file stored at
+        the s3 output location. Returns the execution ID.
+
+        Parameters
+        --
+        query_string : str
+             - The SQL like string that will be used to query your Athena database.
+
+        s3_output_location: str
+             - the path of the S3 Bucket subfolder where the output file will generate to.
+                EXAMPLE: s3://{bucket_name}/sub/folder
+
+        Returns
+        --
+        str
+             - The execution ID of the query, if successful. Otherwise,
+             an exception is raised.
+        '''
+        # Start the query, get the id back
+        execution_id = self.__start_query(query_string, s3_output_location)
+        # Loop until you get a successful query
+        self.__check_if_query_complete(execution_id)
+        return execution_id
+
+    @staticmethod
+    def s3_query_output_url(
+         execution_id, s3_output_location
+    ):
+        return '{}/{}.csv'.format(s3_output_location.rstrip('/'), execution_id)
+
     def query(self, query_string = '', s3_output_location = ''):
         '''
         Queries your Athena database, and generates a pandas DataFrame from the output file stored at the s3 output location.
@@ -72,12 +104,11 @@ class AthenaDFConnector:
         pandas.DataFrame
              - the DataFrame representation of the query provided.
         '''
-        # Start the query, get the id back
-        execution_id = self.__start_query(query_string, s3_output_location)
-        # Loop until you get a successful query
-        self.__check_if_query_complete(execution_id)
+
+        execution_id = self.query_to_csv(query_string, s3_output_location)
+
         # Return a dataframe of the generated S3 object
-        return self.__convert_to_dataframe(execution_id, s3_output_location)
+        return self.s3_query_output_to_dataframe(execution_id, s3_output_location)
         
 
 
@@ -134,9 +165,9 @@ class AthenaDFConnector:
                 # if the state is RUNNING or QUEUED
                 time.sleep(2)
 
-    def __convert_to_dataframe(self, execution_id = 0, s3_output_location = ''):
+    def s3_query_output_to_dataframe(self, execution_id = 0, s3_output_location = ''):
         '''
-        Step 3/3: Once query is complete, get CSV from S3 bucket, and return the Dataframe of the CSV.
+        Once query is complete, get CSV from S3 bucket, and return the Dataframe of the CSV.
 
         Parameters
         --
@@ -158,16 +189,16 @@ class AthenaDFConnector:
              - raised if unable to get the generated CSV file from the S3 bucket after query completed.
         '''
         # Separate the bucket name from the rest of the subfolders
-        split_s3_name = s3_output_location.replace('s3://', '').split('/', 1)
+        csv_s3_url = self.s3_query_output_url(execution_id, s3_output_location)
+        split_s3_name = csv_s3_url.replace('s3://', '').split('/', 1)
         bucket_name = split_s3_name[0]
         key = split_s3_name[1]
 
         # Get the file from S3
         try:
-            file_obj = self.s3_client.get_object(Bucket=bucket_name, Key='{}/{}.csv'.format(key, execution_id))
+            file_obj = self.s3_client.get_object(Bucket=bucket_name, Key=key)
         except Exception as e:
             raise FileNotFoundError('Could not find generated CSV file in S3.\nError: {}'.format(e))
 
         # Convert the file to CSV then to Pandas Dataframe
         return pandas.read_csv(io.BytesIO(file_obj['Body'].read()))
-    
